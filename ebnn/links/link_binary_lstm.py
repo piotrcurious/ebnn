@@ -23,15 +23,22 @@ class BinaryLSTM(chainer.Chain, CLink):
         self.h = None
         self.c = None
 
-    def __call__(self, x):
+    def __call__(self, x, return_state=False):
         if self.h is None:
             xp = self.xp
             self.h = chainer.Variable(xp.zeros((x.shape[0], self.out_size), dtype=x.dtype))
             self.c = chainer.Variable(xp.zeros((x.shape[0], self.out_size), dtype=x.dtype))
 
         lstm_in = self.upward(x) + self.lateral(self.h)
-        self.c, self.h = F.lstm(self.c, lstm_in)
+        new_c, new_h = F.lstm(self.c, lstm_in)
 
+        self.prev_c = self.c
+        self.prev_h = self.h
+        self.c = new_c
+        self.h = new_h
+
+        if return_state:
+            return self.h, self.c
         return self.h
 
     def reset_state(self):
