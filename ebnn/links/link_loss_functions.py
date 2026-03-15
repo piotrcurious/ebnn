@@ -37,6 +37,26 @@ class HammingLoss(link.Link):
     def __call__(self, x, t):
         return F.mean(F.absolute_error(F.sigmoid(x), t))
 
+class BitwiseXorLoss(link.Link):
+    """Loss based on XOR operation"""
+    def __init__(self):
+        super(BitwiseXorLoss, self).__init__()
+        self.cname = "l_bitwise_xor"
+
+    def __call__(self, x, t):
+        # Continuous approximation of XOR: (x-t)^2
+        return F.mean_squared_error(x, t)
+
+class BitwiseAndLoss(link.Link):
+    """Loss based on AND operation"""
+    def __init__(self):
+        super(BitwiseAndLoss, self).__init__()
+        self.cname = "l_bitwise_and"
+
+    def __call__(self, x, t):
+        # Continuous approximation of AND: (x*t - t)^2
+        return F.mean_squared_error(x * t, t)
+
 class HingeLoss(link.Link):
     """Algebraic/Binary loss"""
     def __init__(self):
@@ -54,7 +74,8 @@ class HuberLoss(link.Link):
         self.cname = "l_huber_loss"
 
     def __call__(self, x, t):
-        return F.huber_loss(x, t, delta=self.delta)
+        loss = F.huber_loss(x, t, delta=self.delta)
+        return F.mean(loss)
 
 class CrossEntropyLoss(link.Link):
     """Algebraic/Binary loss"""
