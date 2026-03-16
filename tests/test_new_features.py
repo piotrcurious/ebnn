@@ -18,10 +18,12 @@ class TestLossFunctions(unittest.TestCase):
 
     def test_bitwise_xor(self):
         loss = BL.BitwiseXorLoss()
-        x = np.array([[1.0, 0.0]], dtype=np.float32)
-        t = np.array([[1.0, 0.0]], dtype=np.float32)
+        # XOR is 1 when inputs are different. Loss = 1 - XOR.
+        # So XOR loss is 0 when inputs are different.
+        x = np.array([[100.0, -100.0]], dtype=np.float32) # [1, 0]
+        t = np.array([[0.0, 1.0]], dtype=np.float32)      # [0, 1]
         l = loss(x, t)
-        self.assertEqual(l.data, 0.0)
+        self.assertAlmostEqual(l.data, 0.0, places=5)
 
     def test_logical_constraint_equivalent(self):
         loss = BL.LogicalConstraintLoss('equivalent')

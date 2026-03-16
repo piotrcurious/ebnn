@@ -1,11 +1,13 @@
 import chainer
 from chainer import training
 from chainer.training import extension
+import numpy as np
 
 class LogicalOptimizer(chainer.Optimizer):
     """
     A wrapper optimizer that can dynamically adjust loss weights or
     apply logical constraints during training.
+    Also handles weight clipping for binary networks.
     """
     def __init__(self, actual_optimizer):
         super(LogicalOptimizer, self).__init__()
@@ -14,16 +16,16 @@ class LogicalOptimizer(chainer.Optimizer):
         self.logical_weight = 0.1 # Default weight for logical components
 
     def update(self, loss_func=None, *args, **kwds):
-        """
-        Updates parameters.
-        If loss_func is provided, it is used to compute the loss.
-        """
         if loss_func is not None:
-            # We can't easily wrap loss_func here without knowing its signature
-            # but we can let the actual optimizer handle it.
             self.actual_optimizer.update(loss_func, *args, **kwds)
         else:
             self.actual_optimizer.update(*args, **kwds)
+
+        # Post-update: Weight clipping to [-1, 1]
+        for param in self.target.params():
+            if 'W' in param.name:
+                xp = chainer.cuda.get_array_module(param.data)
+                param.data[:] = xp.clip(param.data, -1.0, 1.0)
 
     def setup(self, link):
         self.actual_optimizer.setup(link)
@@ -35,11 +37,6 @@ class LogicalOptimizer(chainer.Optimizer):
             self.logical_weight = serializer('logical_weight', self.logical_weight)
 
 class LogicalWeightScheduler(extension.Extension):
-    """
-    Extension to adjust the weight of logical losses over time.
-    Useful for 'warm-starting' with logical constraints and then
-    decaying them to focus on precision, or vice versa.
-    """
     def __init__(self, optimizer, attr='logical_weight', factor=0.95, interval=100):
         self.optimizer = optimizer
         self.attr = attr

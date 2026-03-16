@@ -2,199 +2,263 @@ from __future__ import absolute_import
 
 from chainer import link
 import chainer.functions as F
+import chainer
+from ebnn.utils import logic as L
+from ebnn.utils.hamiltonian import Hamiltonian
 
-class MeanSquaredError(link.Link):
+class BaseLoss(link.Link):
+    def __init__(self):
+        super(BaseLoss, self).__init__()
+        self.cname = "l_base"
+
+    def __call__(self, *args, **kwargs):
+        # We handle (x, t) or (model, x, t)
+        if len(args) == 3:
+            return self.forward(args[1], args[2], model=args[0])
+        return self.forward(args[0], args[1])
+
+    def forward(self, x, t, model=None):
+        raise NotImplementedError()
+
+    def __add__(self, other):
+        if isinstance(other, (int, float)): return AddConstantLoss(self, other)
+        return AddLoss(self, other)
+
+    def __radd__(self, other): return self.__add__(other)
+
+    def __sub__(self, other):
+        if isinstance(other, (int, float)): return AddConstantLoss(self, -other)
+        return SubLoss(self, other)
+
+    def __mul__(self, other):
+        if isinstance(other, (int, float)): return MulConstantLoss(self, other)
+        return MulLoss(self, other)
+
+    def __rmul__(self, other): return self.__mul__(other)
+
+class AddLoss(BaseLoss):
+    def __init__(self, l1, l2):
+        super(AddLoss, self).__init__()
+        with self.init_scope():
+            self.l1 = l1
+            self.l2 = l2
+        self.cname = f"({l1.cname}+{l2.cname})"
+    def __call__(self, *args, **kwargs): return self.l1(*args, **kwargs) + self.l2(*args, **kwargs)
+
+class SubLoss(BaseLoss):
+    def __init__(self, l1, l2):
+        super(SubLoss, self).__init__()
+        with self.init_scope():
+            self.l1 = l1
+            self.l2 = l2
+        self.cname = f"({l1.cname}-{l2.cname})"
+    def __call__(self, *args, **kwargs): return self.l1(*args, **kwargs) - self.l2(*args, **kwargs)
+
+class MulLoss(BaseLoss):
+    def __init__(self, l1, l2):
+        super(MulLoss, self).__init__()
+        with self.init_scope():
+            self.l1 = l1
+            self.l2 = l2
+        self.cname = f"({l1.cname}*{l2.cname})"
+    def __call__(self, *args, **kwargs): return self.l1(*args, **kwargs) * self.l2(*args, **kwargs)
+
+class AddConstantLoss(BaseLoss):
+    def __init__(self, l, c):
+        super(AddConstantLoss, self).__init__()
+        with self.init_scope(): self.l = l
+        self.c = c
+        self.cname = f"({l.cname}+{c})"
+    def __call__(self, *args, **kwargs): return self.l(*args, **kwargs) + self.c
+
+class MulConstantLoss(BaseLoss):
+    def __init__(self, l, c):
+        super(MulConstantLoss, self).__init__()
+        with self.init_scope(): self.l = l
+        self.c = c
+        self.cname = f"({l.cname}*{c})"
+    def __call__(self, *args, **kwargs): return self.l(*args, **kwargs) * self.c
+
+class MeanSquaredError(BaseLoss):
     def __init__(self):
         super(MeanSquaredError, self).__init__()
         self.cname = "l_mse"
+    def forward(self, x, t, model=None): return F.mean_squared_error(x, t)
 
-    def __call__(self, x, t):
-        return F.mean_squared_error(x, t)
-
-class AbsoluteError(link.Link):
+class AbsoluteError(BaseLoss):
     def __init__(self):
         super(AbsoluteError, self).__init__()
         self.cname = "l_absolute_error"
+    def forward(self, x, t, model=None): return F.mean_absolute_error(x, t)
 
-    def __call__(self, x, t):
-        return F.mean_absolute_error(x, t)
-
-class BinaryError(link.Link):
-    """Loss for binary classification"""
+class BinaryError(BaseLoss):
     def __init__(self):
         super(BinaryError, self).__init__()
         self.cname = "l_binary_error"
-
-    def __call__(self, x, t):
-        # Ensure t matches x shape if it's a regression-like target
-        if x.shape != t.shape:
-            t = F.reshape(t, x.shape)
-        if t.dtype.kind == 'f':
-            t = F.cast(t, 'int32')
+    def forward(self, x, t, model=None):
+        if x.shape != t.shape: t = F.reshape(t, x.shape)
+        if t.dtype.kind == 'f': t = (t > 0.5).astype('int32')
         return F.sigmoid_cross_entropy(x, t)
 
-class HammingLoss(link.Link):
-    """Bitwise loss"""
-    def __init__(self):
-        super(HammingLoss, self).__init__()
-        self.cname = "l_hamming_loss"
-
-    def __call__(self, x, t):
-        return F.mean(F.absolute_error(F.sigmoid(x), t))
-
-class BitwiseXorLoss(link.Link):
-    """Loss based on XOR operation"""
-    def __init__(self):
-        super(BitwiseXorLoss, self).__init__()
-        self.cname = "l_bitwise_xor"
-
-    def __call__(self, x, t):
-        # Continuous approximation of XOR: (x-t)^2
-        return F.mean_squared_error(x, t)
-
-class BitwiseAndLoss(link.Link):
-    """Loss based on AND operation: penalty if (x AND t) != t"""
-    def __init__(self):
-        super(BitwiseAndLoss, self).__init__()
-        self.cname = "l_bitwise_and"
-
-    def __call__(self, x, t):
-        # Continuous approximation of AND: (x*t - t)^2
-        return F.mean_squared_error(x * t, t)
-
-class BitwiseOrLoss(link.Link):
-    """Loss based on OR operation: penalty if (x OR t) != 1 where either is 1"""
-    def __init__(self):
-        super(BitwiseOrLoss, self).__init__()
-        self.cname = "l_bitwise_or"
-
-    def __call__(self, x, t):
-        # Continuous approximation of OR: 1 - (1-x)*(1-t) should be close to 1 if either is 1
-        # Target is x+t - x*t
-        target = x + t - x * t
-        return F.mean_squared_error(x, target)
-
-class BitwiseNotLoss(link.Link):
-    """Loss based on NOT operation: penalty if x != (1-t)"""
-    def __init__(self):
-        super(BitwiseNotLoss, self).__init__()
-        self.cname = "l_bitwise_not"
-
-    def __call__(self, x, t):
-        return F.mean_squared_error(x, 1.0 - t)
-
-class BitwiseNandLoss(link.Link):
-    def __init__(self):
-        super(BitwiseNandLoss, self).__init__()
-        self.cname = "l_bitwise_nand"
-
-    def __call__(self, x, t):
-        return F.mean_squared_error(x, 1.0 - (x * t))
-
-class BitwiseNorLoss(link.Link):
-    def __init__(self):
-        super(BitwiseNorLoss, self).__init__()
-        self.cname = "l_bitwise_nor"
-
-    def __call__(self, x, t):
-        return F.mean_squared_error(x, (1.0 - x) * (1.0 - t))
-
-class LogicalConstraintLoss(link.Link):
-    """
-    Enforces that the output satisfies a logical relation.
-    relation can be 'implies', 'equivalent', etc.
-    """
-    def __init__(self, relation='implies'):
-        super(LogicalConstraintLoss, self).__init__()
+class LogicLoss(BaseLoss):
+    def __init__(self, relation='equivalent', activation='sigmoid'):
+        super(LogicLoss, self).__init__()
         self.relation = relation
-        self.cname = "l_logical_constraint"
+        self.activation = activation
+        self.cname = f"l_logic_{relation}"
 
-    def __call__(self, x, t):
-        if x.shape != t.shape:
-            t = F.reshape(t, x.shape)
-        if self.relation == 'implies':
-            # t -> x  is only violated if t is true and x is false.
-            # We penalize the difference (t - x) but only when t > x.
-            return F.mean(F.relu(t - F.sigmoid(x)))
-        elif self.relation == 'equivalent':
-            return F.mean_squared_error(F.sigmoid(x), t)
-        return 0.0
+    def forward(self, x, t, model=None):
+        if x.shape != t.shape: t = F.reshape(t, x.shape)
+        if self.activation == 'sigmoid':
+            p_x = F.sigmoid(x)
+            p_t = t
+        elif self.activation == 'tanh':
+            p_x = (F.tanh(x) + 1.0) / 2.0
+            p_t = (t + 1.0) / 2.0
+        else:
+            p_x = x
+            p_t = t
 
-class HingeLoss(link.Link):
-    """Algebraic/Binary loss"""
-    def __init__(self):
-        super(HingeLoss, self).__init__()
-        self.cname = "l_hinge_loss"
+        if self.relation == 'equivalent': val = L.f_equivalent(p_x, p_t)
+        elif self.relation == 'implies': val = L.f_implies(p_t, p_x)
+        elif self.relation == 'and': val = L.f_and(p_x, p_t)
+        elif self.relation == 'or': val = L.f_or(p_x, p_t)
+        elif self.relation == 'xor': val = L.f_xor(p_x, p_t)
+        elif self.relation == 'nand': val = L.f_nand(p_x, p_t)
+        elif self.relation == 'nor': val = L.f_nor(p_x, p_t)
+        elif self.relation == 'not': val = L.f_not(p_x)
+        else: val = p_x
 
-    def __call__(self, x, t):
-        return F.hinge(x, t)
+        return F.mean(1.0 - val)
 
-class HuberLoss(link.Link):
-    """Algebraic loss"""
+LogicalConstraintLoss = LogicLoss
+BitwiseXorLoss = lambda: LogicLoss('xor')
+BitwiseAndLoss = lambda: LogicLoss('and')
+BitwiseOrLoss = lambda: LogicLoss('or')
+BitwiseNotLoss = lambda: LogicLoss('not')
+BitwiseNandLoss = lambda: LogicLoss('nand')
+BitwiseNorLoss = lambda: LogicLoss('nor')
+HammingLoss = lambda: LogicLoss('equivalent')
+
+class HuberLoss(BaseLoss):
     def __init__(self, delta=1.0):
         super(HuberLoss, self).__init__()
         self.delta = delta
-        self.cname = "l_huber_loss"
+        self.cname = "l_huber"
+    def forward(self, x, t, model=None): return F.mean(F.huber_loss(x, t, delta=self.delta))
 
-    def __call__(self, x, t):
-        loss = F.huber_loss(x, t, delta=self.delta)
-        return F.mean(loss)
+class HingeLoss(BaseLoss):
+    def __init__(self):
+        super(HingeLoss, self).__init__()
+        self.cname = "l_hinge"
+    def forward(self, x, t, model=None):
+        if t.dtype.kind == 'f': t = (t > 0.5).astype('int32')
+        return F.hinge(x, t)
 
-class CrossEntropyLoss(link.Link):
-    """Algebraic/Binary loss"""
+class CrossEntropyLoss(BaseLoss):
     def __init__(self):
         super(CrossEntropyLoss, self).__init__()
         self.cname = "l_cross_entropy"
+    def forward(self, x, t, model=None): return F.softmax_cross_entropy(x, t)
 
-    def __call__(self, x, t):
-        return F.softmax_cross_entropy(x, t)
-
-class ComplexityRegularizer(link.Link):
-    """Adds a penalty based on model complexity (e.g. number of active units)"""
-    def __init__(self, base_loss, weight=0.01):
-        super(ComplexityRegularizer, self).__init__()
-        self.base_loss = base_loss
-        self.weight = weight
-        self.cname = "l_complexity_regularizer"
-
-    def __call__(self, y, t):
-        loss = self.base_loss(y, t)
-        # Complexity as L1 norm of activations
-        complexity = F.sum(F.absolute(y))
-        return loss + self.weight * complexity
-
-class CompositeLoss(link.Link):
-    """Combines multiple losses with weights"""
-    def __init__(self, losses_with_weights):
-        super(CompositeLoss, self).__init__()
-        self.losses_with_weights = losses_with_weights
-        self.cname = "l_composite_loss"
-
-    def __call__(self, x, t):
-        total_loss = 0
-        for loss_func, weight in self.losses_with_weights:
-            total_loss += weight * loss_func(x, t)
-        return total_loss
-
-class StateTransitionLoss(link.Link):
-    """Loss for LSTM internal states to ensure smooth transitions"""
+class ComplexityLoss(BaseLoss):
     def __init__(self, weight=0.01):
+        super(ComplexityLoss, self).__init__()
+        self.weight = weight
+        self.cname = "l_complexity"
+
+    def forward(self, x, t, model=None):
+        total_complexity = 0
+        found = False
+        if model is not None and hasattr(model, 'predictor'):
+            for link in model.predictor:
+                if hasattr(link, 'get_complexity'):
+                    total_complexity += link.get_complexity()
+                    found = True
+
+        if not found:
+            total_complexity = F.sum(F.absolute(x))
+
+        return self.weight * total_complexity
+
+class StateTransitionLoss(BaseLoss):
+    def __init__(self, weight=1.0):
         super(StateTransitionLoss, self).__init__()
         self.weight = weight
         self.cname = "l_state_transition"
 
-    def __call__(self, model, x, t):
-        # We find any LSTM-like layers in the predictor and apply state transition loss
+    def forward(self, x, t, model=None):
         total_loss = 0.0
         found = False
-        for link in model.predictor:
-            if hasattr(link, 'h') and hasattr(link, 'prev_h'):
-                h = link.h
-                prev_h = link.prev_h
-                if prev_h is not None:
-                    total_loss += self.weight * F.mean_squared_error(h, prev_h)
-                found = True
+        if model is not None and hasattr(model, 'predictor'):
+            for link in model.predictor:
+                if hasattr(link, 'h') and hasattr(link, 'prev_h'):
+                    if link.prev_h is not None:
+                        total_loss += F.mean_squared_error(link.h, link.prev_h)
+                    found = True
+        if not found: return 0.0
+        return self.weight * total_loss
 
-        if not found:
-            return 0.0
-        return total_loss
+class HamiltonianEnergyLoss(BaseLoss):
+    def __init__(self, weight=0.01, mode='ising'):
+        super(HamiltonianEnergyLoss, self).__init__()
+        self.weight = weight
+        self.mode = mode
+        self.cname = f"l_hamiltonian_{mode}"
+
+    def forward(self, x, t, model=None):
+        energy = 0
+        if model is None: return 0.0
+
+        if self.mode == 'ising':
+            for param in model.params():
+                if 'W' in param.name:
+                    energy += Hamiltonian.ising_energy(param)
+        elif self.mode == 'activation':
+            # Activation energy of the current output
+            energy = Hamiltonian.activation_energy(x)
+
+        return self.weight * energy
+
+class CompositeLoss(BaseLoss):
+    def __init__(self, losses_with_weights):
+        super(CompositeLoss, self).__init__()
+        self.losses_with_weights = losses_with_weights
+        self.cname = "l_composite"
+
+    def __call__(self, *args, **kwargs):
+        total = 0
+        for l, w in self.losses_with_weights:
+            total += w * l(*args, **kwargs)
+        return total
+
+ComplexityRegularizer = lambda base_loss, weight=0.01: base_loss + ComplexityLoss(weight)
+
+class LossBuilder(object):
+    _loss_map = {
+        'mse': MeanSquaredError,
+        'abs': AbsoluteError,
+        'binary': BinaryError,
+        'huber': HuberLoss,
+        'hinge': HingeLoss,
+        'ce': CrossEntropyLoss,
+        'xor': lambda: LogicLoss('xor'),
+        'and': lambda: LogicLoss('and'),
+        'or': lambda: LogicLoss('or'),
+        'not': lambda: LogicLoss('not'),
+        'implies': lambda: LogicLoss('implies'),
+        'equiv': lambda: LogicLoss('equivalent'),
+        'ising': lambda: HamiltonianEnergyLoss(mode='ising'),
+        'energy': lambda: HamiltonianEnergyLoss(mode='activation'),
+    }
+
+    @classmethod
+    def build(cls, expression):
+        safe_names = {k: v() for k, v in cls._loss_map.items()}
+        safe_names['complexity'] = ComplexityLoss()
+        safe_names['state_transition'] = StateTransitionLoss()
+        safe_names['hamiltonian'] = HamiltonianEnergyLoss()
+        try:
+            return eval(expression, {"__builtins__": None}, safe_names)
+        except Exception as e:
+            raise ValueError(f"Could not build loss from expression '{expression}': {e}")

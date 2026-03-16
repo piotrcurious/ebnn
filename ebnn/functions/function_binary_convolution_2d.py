@@ -143,6 +143,9 @@ class BinaryConvolution2DFunction(function.Function):
         h, w = x.shape[2:]
 
         gW = numpy.tensordot(gy, self.col, ((0, 2, 3), (0, 4, 5)))
+        # Clipped STE
+        gW = numpy.where(numpy.abs(W) <= 1.0, gW, 0).astype(numpy.float32, copy=False)
+
         gcol = numpy.tensordot(Wb, gy, (0, 1))
         gcol = numpy.rollaxis(gcol, 3)
         gx = conv.col2im_cpu(gcol, self.sy, self.sx, self.ph, self.pw, h, w)
@@ -209,6 +212,12 @@ class BinaryConvolution2DFunction(function.Function):
                     gy_desc.value, gy.data.ptr, self.conv_desc.value,
                     zero.data, x_desc.value, gx.data.ptr)
 
+            # Clipped STE for gW
+            gW = cuda.elementwise(
+                'T w, T gw', 'T res',
+                'res = abs(w) <= 1.0 ? gw : 0',
+                'ste_clip')(W, gW)
+
             if b is not None:
                 gb = cuda.cupy.empty_like(b)
                 libcudnn.convolutionBackwardBias(
@@ -223,11 +232,17 @@ class BinaryConvolution2DFunction(function.Function):
             for i in moves.range(n):
                 gW_mat += cuda.cupy.dot(gy_mats[i], col_mats[i].T)
 
-            W_mat = W.reshape(out_c, -1)
+            # Clipped STE for gW
+            gW = cuda.elementwise(
+                'T w, T gw', 'T res',
+                'res = abs(w) <= 1.0 ? gw : 0',
+                'ste_clip')(W, gW)
+
+            Wb_mat = Wb.reshape(out_c, -1)
             gcol = cuda.cupy.empty_like(self.col)
             gcol_mats = gcol.reshape(n, c * kh * kw, out_h * out_w)
             for i in moves.range(n):
-                cuda.cupy.dot(W_mat.T, gy_mats[i], gcol_mats[i])
+                cuda.cupy.dot(Wb_mat.T, gy_mats[i], gcol_mats[i])
 
             gx = conv.col2im_gpu(
                 gcol, self.sy, self.sx, self.ph, self.pw, h, w)
