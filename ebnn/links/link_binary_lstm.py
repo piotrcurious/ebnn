@@ -15,8 +15,14 @@ class BinaryLSTM(chainer.Chain, CLink):
             self.effective_out_size = min(out_size, max_complexity)
 
         with self.init_scope():
+            # Standard LSTM initialization: upward weights can be larger,
+            # lateral weights are often initialized to be orthogonal or small
             self.upward = BinaryLinear(in_size, 4 * self.effective_out_size)
             self.lateral = BinaryLinear(self.effective_out_size, 4 * self.effective_out_size, nobias=True)
+
+            # Initializing weights with a bit more variance can help binary networks
+            self.upward.W.data[:] = np.random.normal(0, 0.1, self.upward.W.shape).astype(np.float32)
+            self.lateral.W.data[:] = np.random.normal(0, 0.1, self.lateral.W.shape).astype(np.float32)
         self.out_size = self.effective_out_size
         self.max_complexity = max_complexity
         self.cname = "l_binary_lstm"

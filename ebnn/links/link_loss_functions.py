@@ -26,6 +26,11 @@ class BinaryError(link.Link):
         self.cname = "l_binary_error"
 
     def __call__(self, x, t):
+        # Ensure t matches x shape if it's a regression-like target
+        if x.shape != t.shape:
+            t = F.reshape(t, x.shape)
+        if t.dtype.kind == 'f':
+            t = F.cast(t, 'int32')
         return F.sigmoid_cross_entropy(x, t)
 
 class HammingLoss(link.Link):
@@ -105,6 +110,8 @@ class LogicalConstraintLoss(link.Link):
         self.cname = "l_logical_constraint"
 
     def __call__(self, x, t):
+        if x.shape != t.shape:
+            t = F.reshape(t, x.shape)
         if self.relation == 'implies':
             # t -> x  is only violated if t is true and x is false.
             # We penalize the difference (t - x) but only when t > x.
