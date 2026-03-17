@@ -64,7 +64,9 @@ class BinaryLinearFunction(function.Function):
         gy = grad_outputs[0]
 
         gx = gy.dot(Wb).reshape(inputs[0].shape)
+        # Clipped STE: zero gradient if |W| > 1
         gW = gy.T.dot(x)
+        gW = numpy.where(numpy.abs(W) <= 1.0, gW, 0).astype(numpy.float32, copy=False)
         if len(inputs) == 3:
             gb = gy.sum(0)
             return gx, gW, gb
@@ -78,7 +80,12 @@ class BinaryLinearFunction(function.Function):
         gy = grad_outputs[0]
 
         gx = gy.dot(Wb).reshape(inputs[0].shape)
+        # Clipped STE: zero gradient if |W| > 1
         gW = gy.T.dot(x)
+        gW = cuda.elementwise(
+            'T w, T gw', 'T res',
+            'res = abs(w) <= 1.0 ? gw : 0',
+            'ste_clip')(W, gW)
         if len(inputs) == 3:
             gb = gy.sum(0)
             return gx, gW, gb

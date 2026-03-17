@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 # Setup path to import ebnn
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import ebnn.links as BL
-from dataset_generator import get_dataset
+from ebnn.utils.logical_optimizer import LogicalOptimizer
+from dataset_generator import get_dataset, complex_function_generator
 
 class GenericModel(chainer.Chain):
     def __init__(self, predictor, loss_func):
@@ -21,88 +22,90 @@ class GenericModel(chainer.Chain):
         self.loss_func = loss_func
 
     def __call__(self, x, t):
-        if hasattr(self.predictor[0], 'reset_state'):
-            self.predictor[0].reset_state()
-        y = self.predictor(x)
-        loss = self.loss_func(y, t)
+        for link in self.predictor:
+            if hasattr(link, 'reset_state'): link.reset_state()
+
+        if x.ndim == 3: # Sequence
+            loss = 0; seq_len = x.shape[1]
+            for i in range(seq_len):
+                yi = self.predictor(x[:, i, :])
+                # We need to pass the model (self) to support state/complexity losses
+                loss += self.loss_func(self, yi, t[:, i, :])
+            loss /= seq_len
+        else:
+            y = self.predictor(x)
+            loss = self.loss_func(self, y, t)
+
         reporter.report({'loss': loss}, self)
         return loss
 
-def create_mlp(n_hidden=128):
+def create_mlp(n_hidden=256):
+    return chainer.Sequential(L.Linear(1, n_hidden), F.relu, L.Linear(n_hidden, n_hidden), F.relu, L.Linear(n_hidden, 1))
+
+def create_lstm_predictor(out_size):
     return chainer.Sequential(
-        L.Linear(1, n_hidden),
-        F.relu,
-        L.Linear(n_hidden, n_hidden),
-        F.relu,
-        L.Linear(n_hidden, 1)
+        BL.BinaryLSTM(1, out_size),
+        L.Linear(None, 64), F.relu,
+        L.Linear(64, 1)
     )
 
-def create_lstm_predictor(out_size, max_complexity):
-    return chainer.Sequential(
-        BL.BinaryLSTM(1, out_size, max_complexity=max_complexity),
-        L.Linear(None, 1)
-    )
+def train_and_evaluate(func_type, n_samples=2000, epochs=100):
+    print(f"\n--- [Final Evaluation] {func_type} ---")
+    train_data, _ = get_dataset(func_type, n_samples=n_samples, noise=0.01)
+    seq_train, _ = get_dataset(func_type, n_samples=n_samples, noise=0.01, sequence=True, seq_len=10)
 
-def train_and_evaluate(func_type, n_samples=2000):
-    print(f"\n--- Evaluating Function Type: {func_type} ---")
-    train_data, test_data = get_dataset(func_type, n_samples=n_samples, noise=0.05)
+    y_raw = np.array([p[1] for p in train_data])
+    y_mean, y_std = y_raw.mean(), y_raw.std()
+    norm = lambda y: (y - y_mean) / (y_std + 1e-7)
+    train_data = [(x, norm(y)) for x, y in train_data]
+    seq_train = [(x, norm(y)) for x, y in seq_train]
 
-    x_test = np.array([d[0] for d in test_data]).flatten()
-    y_test = np.array([d[1] for d in test_data]).flatten()
-    x_train = np.array([d[0] for d in train_data]).flatten()
-    y_train = np.array([d[1] for d in train_data]).flatten()
+    x_test = np.linspace(-1, 1, 100).astype(np.float32).reshape(-1, 1)
+    y_test_true = norm(np.array([p[1] for p in complex_function_generator(func_type, 100, noise=0, sorted_x=True)]).flatten())
+
+    # Build loss using LossBuilder
+    loss_expr = "mse + 0.1 * equiv + 0.01 * state_transition"
+    loss_func = BL.LossBuilder.build(loss_expr)
 
     methods = [
-        ('NN_MSE', GenericModel(create_mlp(128), BL.MeanSquaredError())),
-        ('NN_Huber', GenericModel(create_mlp(128), BL.HuberLoss())),
-        ('LSTM_C16', GenericModel(create_lstm_predictor(32, 16), BL.MeanSquaredError())),
-        ('LSTM_C8', GenericModel(create_lstm_predictor(32, 8), BL.MeanSquaredError())),
+        ('MLP_Baseline', GenericModel(create_mlp(256), BL.MeanSquaredError()), False),
+        ('LSTM_Logical_Final', GenericModel(create_lstm_predictor(64), loss_func), True),
     ]
 
     results = {}
-
-    for name, model in methods:
+    for name, model, use_seq in methods:
         print(f"Training {name}...")
-        train_iter = chainer.iterators.SerialIterator(train_data, 64)
-        optimizer = chainer.optimizers.Adam(alpha=0.001)
-        optimizer.setup(model)
-        updater = training.StandardUpdater(train_iter, optimizer)
-        trainer = training.Trainer(updater, (100, 'epoch'), out=f'_tmp_{func_type}_{name}')
+        it = chainer.iterators.SerialIterator(seq_train if use_seq else train_data, 64)
+        opt = chainer.optimizers.Adam(alpha=0.001)
+        if 'Logical' in name: opt = LogicalOptimizer(opt)
+        opt.setup(model)
+
+        trainer = training.Trainer(training.StandardUpdater(it, opt), (epochs, 'epoch'), out=f'_tmp_final_{func_type}_{name}')
         trainer.run()
 
-        x_test_var = chainer.Variable(x_test.reshape(-1, 1).astype(np.float32))
-        if hasattr(model.predictor[0], 'reset_state'):
-            model.predictor[0].reset_state()
-        y_pred = model.predictor(x_test_var).data.flatten()
+        with chainer.using_config('train', False):
+            if use_seq:
+                for l in model.predictor:
+                    if hasattr(l, 'reset_state'): l.reset_state()
+                y_pred = np.array([model.predictor(xi.reshape(1,1)).data.flatten()[0] for xi in x_test])
+            else:
+                y_pred = model.predictor(x_test).data.flatten()
         results[name] = y_pred
 
-    # Classical Polynomial Fit (Degree 7)
-    poly_coeffs = np.polyfit(x_train, y_train, 7)
-    y_poly_pred = np.polyval(poly_coeffs, x_test)
-    results['Classical_Poly7'] = y_poly_pred
+    poly_coeffs = np.polyfit(np.array([p[0] for p in train_data]).flatten(),
+                             np.array([p[1] for p in train_data]).flatten(), 12)
+    results['Poly_Deg12'] = np.polyval(poly_coeffs, x_test.flatten())
 
-    # Plotting
-    plt.figure(figsize=(12, 7))
-    plt.scatter(x_test, y_test, label='True Data (noisy)', alpha=0.15, color='gray')
-    idx = np.argsort(x_test)
-
-    for name, y_pred in results.items():
-        mse = np.mean((y_pred - y_test)**2)
-        plt.plot(x_test[idx], y_pred[idx], label=f'{name} (MSE: {mse:.4f})', linewidth=2)
-
-    plt.title(f'Fitting comparison for {func_type}')
-    plt.legend()
-    plt.xlabel('x')
-    plt.ylabel('y')
-    plot_path = f'eval_{func_type}.png'
-    plt.savefig(plot_path)
-    print(f"Graph saved as {plot_path}")
-
-    # Cleanup
-    import shutil
-    for name, _ in methods:
-        shutil.rmtree(f'_tmp_{func_type}_{name}', ignore_errors=True)
+    plt.figure(figsize=(10, 6))
+    plt.plot(x_test, y_test_true, 'k--', label='True', alpha=0.5)
+    for name, yp in results.items():
+        mse_val = np.mean((yp - y_test_true)**2)
+        plt.plot(x_test, yp, label=f'{name} (MSE: {mse_val:.4f})')
+    plt.title(f'Final Result: {func_type}')
+    plt.legend(); plt.grid(True)
+    path = f'final_eval_{func_type}.png'
+    plt.savefig(path); print(f"Saved {path}")
 
 if __name__ == '__main__':
-    for ft in ['compound_sine', 'sine_exp_decay', 'varying_noise', 'polynomial']:
-        train_and_evaluate(ft)
+    train_and_evaluate('fourier_series', epochs=100)
+    train_and_evaluate('fixed_poly', epochs=100)

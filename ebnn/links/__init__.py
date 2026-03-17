@@ -85,5 +85,5 @@ from .link_conv_BN_BST import ConvBNBST
 from .link_binary_conv_BN_BST import BinaryConvBNBST
 from .link_conv_pool_BN_BST import ConvPoolBNBST
 from .link_binary_conv_pool_BN_BST import BinaryConvPoolBNBST
-from .link_loss_functions import MeanSquaredError, AbsoluteError, BinaryError, HammingLoss, HingeLoss, HuberLoss, CrossEntropyLoss, ComplexityRegularizer, BitwiseXorLoss, BitwiseAndLoss
+from .link_loss_functions import MeanSquaredError, AbsoluteError, BinaryError, HammingLoss, HingeLoss, HuberLoss, CrossEntropyLoss, ComplexityRegularizer, BitwiseXorLoss, BitwiseAndLoss, BitwiseOrLoss, BitwiseNotLoss, BitwiseNandLoss, BitwiseNorLoss, LogicalConstraintLoss, CompositeLoss, StateTransitionLoss, LogicLoss, ComplexityLoss, LossBuilder
 from .link_binary_lstm import BinaryLSTM
