@@ -35,9 +35,12 @@ class ExploratoryModel(chainer.Chain):
         reporter.report({'loss': loss, 'mse': F.mean_squared_error(y, t)}, self)
         return loss
 
-    def exploratory_inference(self, x, t_ref, steps=5):
+    def exploratory_inference(self, x, t_ref, steps=10, awareness=None):
         # Refine prediction via Dreaming
-        refined_x = self.dreamer.dream(x, t_ref, steps=steps)
+        refined_x = self.dreamer.dream(x, t_ref, steps=steps, awareness=awareness)
+        # Final reset before inference
+        for name, link in self.predictor.namedlinks():
+            if hasattr(link, 'reset_state'): link.reset_state()
         return self.predictor(refined_x)
 
 def train_exploratory_system(func_type, n_samples=1000, epochs=200):
@@ -75,6 +78,8 @@ def train_exploratory_system(func_type, n_samples=1000, epochs=200):
     y_test_true = np.array([p[1] for p in complex_function_generator(func_type, 100, noise=0, sorted_x=True)]).flatten()
 
     with chainer.using_config('train', False):
+        awareness = StructuralAwareness.map_connectivity(model.predictor)
+
         for name, link in model.predictor.namedlinks():
             if hasattr(link, 'reset_state'): link.reset_state()
         # Standard Prediction
@@ -82,11 +87,9 @@ def train_exploratory_system(func_type, n_samples=1000, epochs=200):
 
         # Exploratory Inference (Dreaming)
         # We 'dream' about the test targets to see how the model generalizes its landscape
-        for name, link in model.predictor.namedlinks():
-            if hasattr(link, 'reset_state'): link.reset_state()
         x_var = chainer.Variable(x_test)
         t_dummy = chainer.Variable(scale(y_test_true).astype(np.float32).reshape(-1, 1))
-        y_pred_dream = unscale(model.exploratory_inference(x_var, t_dummy, steps=10).data.flatten())
+        y_pred_dream = unscale(model.exploratory_inference(x_var, t_dummy, steps=20, awareness=awareness).data.flatten())
 
     plt.figure(figsize=(10, 6))
     plt.plot(x_test, y_test_true, 'k--', label='True', alpha=0.5)

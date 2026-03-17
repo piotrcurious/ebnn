@@ -55,19 +55,24 @@ class InteractionEnergy(SymbolicEnergy):
                 # Local interaction: negative product of neighbors
                 # H_int = - sum W_i * W_j
                 if param.ndim == 2:
-                    energy -= F.sum(param[:, :-1] * param[:, 1:])
-                    energy -= F.sum(param[:-1, :] * param[1:, :])
+                    # Normalize by size to keep energy stable across different layer sizes
+                    e_h = -F.sum(param[:, :-1] * param[:, 1:]) / (param.size + 1e-7)
+                    e_v = -F.sum(param[:-1, :] * param[1:, :]) / (param.size + 1e-7)
+                    energy += (e_h + e_v)
         return self.weight * energy
 
 class KineticEnergy(SymbolicEnergy):
     """Represents the energy of state transitions (for RNN/LSTM)."""
     def compute(self, model, x, y, t):
         energy = 0
+        count = 0
         for link in model.children():
             if hasattr(link, 'h') and hasattr(link, 'prev_h'):
                 if link.prev_h is not None:
                     energy += F.mean_squared_error(link.h, link.prev_h)
-        return self.weight * energy
+                    count += 1
+        if count == 0: return 0.0
+        return self.weight * (energy / count)
 
 class LogicalConstraintEnergy(SymbolicEnergy):
     """Represents the energy of violating logical predicates."""
